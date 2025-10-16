@@ -21,6 +21,61 @@ _path_join(DEFAULT_PATH, "loading")
 import numpy as np
 import pandas as pd
 
+def compute_barra_beta(
+    ticker_df: pd.DataFrame,
+    sp_df: pd.DataFrame,
+    price_col: str = "close",
+    rf_daily: pd.Series | float | None = None,  # daily risk-free (e.g., T-bill/252)
+    halflife: int = 63,                          # ~3 months of trading days
+    min_periods: int = 60,                       # warm-up
+    shrink_to: float | pd.Series | None = None,  # prior beta (e.g., industry beta)
+    shrink_intensity: float = 0.25               # 0=no shrink, 1=all prior
+) -> pd.Series:
+    """
+    Returns a daily Beta series aligned to the intersection of dates.
+    Assumes ticker_df and sp_df each have a DateTime index and a price_col.
+    """
+
+    # 1) Align and create daily simple returns
+    px = pd.DataFrame({
+        "stk": ticker_df[price_col].astype(float),
+        "mkt": sp_df[price_col].astype(float),
+    }).dropna()
+
+    r = px.pct_change().dropna()
+
+    # 2) Excess returns (optional)
+    if rf_daily is not None:
+        if np.isscalar(rf_daily):
+            r_ex_stk = r["stk"] - rf_daily
+            r_ex_mkt = r["mkt"] - rf_daily
+        else:
+            rf = pd.Series(rf_daily, index=r.index).astype(float)
+            r_ex_stk = r["stk"] - rf
+            r_ex_mkt = r["mkt"] - rf
+    else:
+        r_ex_stk = r["stk"]
+        r_ex_mkt = r["mkt"]
+
+    # 3) EWM covariance/variance (EWM-weighted market model slope)
+    #    Beta_t = Cov_t(stk, mkt) / Var_t(mkt)
+    ewm_cov = r_ex_stk.ewm(halflife=halflife, min_periods=min_periods, adjust=False).cov(r_ex_mkt)
+    ewm_var = r_ex_mkt.ewm(halflife=halflife, min_periods=min_periods, adjust=False).var()
+    beta_raw = (ewm_cov / ewm_var).dropna()
+
+    # 4) Shrinkage toward prior (industry beta or 1.0)
+    if shrink_to is not None:
+        if np.isscalar(shrink_to):
+            prior = float(shrink_to)
+            beta = (1 - shrink_intensity) * beta_raw + shrink_intensity * prior
+        else:
+            prior_series = pd.Series(shrink_to, index=beta_raw.index).reindex(beta_raw.index).fillna(method="ffill")
+            beta = (1 - shrink_intensity) * beta_raw + shrink_intensity * prior_series
+    else:
+        beta = beta_raw
+
+    return beta.rename("beta")
+
 
 def rolling_trend_over_mean_quarterly_np(y: np.ndarray, quarters: int = 20) -> np.ndarray:
     """
@@ -239,7 +294,7 @@ def build_leverage(ticker, mkt_data, funda_data):
     mlev_df.name = "leverage_mlev"
 
     # 2. Book leverage
-    num = (funda_da["TOT_COMMON_EQY"].fillna(0.) + \
+    num = (funda_data["TOT_COMMON_EQY"].fillna(0.) + \
            funda_data["BS_LT_BORROW"].fillna(0.) + \
            funda_data["PREFERRED_EQUITY_&_MINORITY_INT"].fillna(0.))
     den = funda_data["TOT_COMMON_EQY"].fillna(0.)
@@ -252,7 +307,7 @@ def build_leverage(ticker, mkt_data, funda_data):
     debt = funda_data["BS_LT_BORROW"].fillna(0.) + funda_data["BS_ST_DEBT"].fillna(0.)
     asset = funda_data["BS_TOT_ASSET"]
     dtoa = debt / asset
-    dtoa_df = _q_to_d(da.values,
+    dtoa_df = _q_to_d(dtoa.values,
                 funda_data["quarter_end_date"].values,
                 close_df.index)
     dtoa_df.name = "leverage_dtoa"
@@ -263,7 +318,6 @@ def build_leverage(ticker, mkt_data, funda_data):
 
 def build_momentum(ticker, mkt_data):
     # 1. Relative strength
-    # 2. historical alpha
     print(f"Building Momentum for {ticker}")
     # Momentum (12–1): cumulative return over past 12 months excluding last month.
     adj_close = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "adj_close"]].set_index(date_col)
@@ -353,7 +407,33 @@ def build_dividend_yield(ticker, mkt_data, funda_data):
     return dividend_yield_df
 
 
-def calc_descriptor(ticker, mkt_data):
+def build_beta(ticker, mkt_data, sp_df):
+    halflife = 63                          # ~3 months of trading days
+    min_periods = 60                       # warm-up
+    price_col = "adj_close"
+    ticker_df = mkt_data.loc[mkt_data[identifier] == ticker].set_index(date_col)
+
+    # 1) Align and create daily simple returns
+    px = pd.DataFrame({
+        "stk": ticker_df[price_col].astype(float),
+        "mkt": sp_df[price_col].astype(float),
+    }).dropna()
+    r = px.pct_change().dropna()
+
+    # 2) Excess returns (optional)
+    r_ex_stk = r["stk"]
+    r_ex_mkt = r["mkt"]
+
+    # 3) EWM covariance/variance (EWM-weighted market model slope)
+    #    Beta_t = Cov_t(stk, mkt) / Var_t(mkt)
+    ewm_cov = r_ex_stk.ewm(halflife=halflife, min_periods=min_periods, adjust=False).cov(r_ex_mkt)
+    ewm_var = r_ex_mkt.ewm(halflife=halflife, min_periods=min_periods, adjust=False).var()
+    beta = (ewm_cov / ewm_var).dropna()
+
+    return beta.rename("beta")
+
+
+def calc_descriptor(ticker, mkt_data, sp_df):
     funda_fn = os.path.join(FUNDA_PATH, f"{ticker.lower()}.csv")
     if not os.path.exists(funda_fn):
         print(f"Failed to load fundamentals for {ticker}")
@@ -361,16 +441,17 @@ def calc_descriptor(ticker, mkt_data):
 
     funda_data = pd.read_csv(funda_fn).shift(1).ffill()
     dfs = []
-    # dfs.append(build_volatility(ticker, mkt_data))
-    # dfs.append(build_momentum(ticker, mkt_data))
-    # dfs.append(build_size(ticker, mkt_data, funda_data))
-    # dfs.append(build_trading_activity(ticker, mkt_data, funda_data))
-    # dfs.append(build_growth(ticker, mkt_data, funda_data))
-    # dfs.append(build_earnings_yield(ticker, mkt_data, funda_data))
-    # dfs.append(build_value(ticker, mkt_data, funda_data))
-    # dfs.append(build_earnings_variability(ticker, mkt_data, funda_data))
+    dfs.append(build_beta(ticker, mkt_data, sp_df))
+    dfs.append(build_volatility(ticker, mkt_data))
+    dfs.append(build_momentum(ticker, mkt_data))
+    dfs.append(build_size(ticker, mkt_data, funda_data))
+    dfs.append(build_trading_activity(ticker, mkt_data, funda_data))
+    dfs.append(build_growth(ticker, mkt_data, funda_data))
+    dfs.append(build_earnings_yield(ticker, mkt_data, funda_data))
+    dfs.append(build_value(ticker, mkt_data, funda_data))
+    dfs.append(build_earnings_variability(ticker, mkt_data, funda_data))
     dfs.append(build_leverage(ticker, mkt_data, funda_data))
-    # dfs.append(build_dividend_yield(ticker, mkt_data, funda_data))
+    dfs.append(build_dividend_yield(ticker, mkt_data, funda_data))
 
     df = pd.concat(dfs, axis=1)
     out_fn = os.path.join(DEFAULT_PATH, "descriptor", f"{ticker}.parquet")
@@ -379,7 +460,6 @@ def calc_descriptor(ticker, mkt_data):
     
 
 def main():
-
     u = UniverseLoader(data_type=universe)
     build_gics(u.universe_df)
 
@@ -390,11 +470,20 @@ def main():
                         identifier
                         )
     mkt_data = loader.load("price")
+    
+    loader = PriceLoader(region,
+                        start_date.strftime("%Y-%m-%d"),
+                        end_date.strftime("%Y-%m-%d"),
+                        "hedger",
+                        identifier
+                        )
+    hedger = loader.load("hedger")
+    sp_df = hedger.loc[hedger["Ticker"] == "SPY"].set_index(date_col)
 
     tickers = mkt_data["Ticker"].unique()
     # tickers = ["CMDB"]
     for ticker in tickers:
-        calc_descriptor(ticker, mkt_data)
+        calc_descriptor(ticker, mkt_data, sp_df)
 
 
 if __name__ == "__main__":
