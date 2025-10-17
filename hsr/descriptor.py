@@ -2,12 +2,7 @@ import os
 import sys
 import numpy as np
 import pandas as pd
-from hsr.config import *
-from matterhorn.data_loader.price_loader import PriceLoader
-from matterhorn.universe.universe_loader import UniverseLoader
 from matterhorn.util.tradingdays import TradingDays
-import matterhorn.util.mputil as mputil
-import statsmodels.api as sm
 
 
 def _path_join(root, subfolder):
@@ -15,12 +10,8 @@ def _path_join(root, subfolder):
     if not os.path.exists(res):
         os.makedirs(res)
     return res
+
     
-_path_join(DEFAULT_PATH, "loading")
-
-import numpy as np
-import pandas as pd
-
 def compute_barra_beta(
     ticker_df: pd.DataFrame,
     sp_df: pd.DataFrame,
@@ -150,18 +141,21 @@ def rolling_trend_over_mean_quarterly_np(y: np.ndarray, quarters: int = 20) -> n
         return out
 
 
-def build_gics(universe_data):
+def build_gics(industry_df):
     # Industry dummies
-    # # One-hot GICS (or your internal industry). If you don’t have GICS, you can approximate from 10-K NAICS/SIC—still “fundamentals-derived”.
-    s = pd.Series(universe_data["Sector"].values, 
-                  index=universe_data[identifier].values,
-                  name="sector")
+    industry_df.dropna(inplace=True)
+    industry_df = industry_df[industry_df["GICS_INDUSTRY_NAME"] != "#N/A Invalid Security"]
+    tickers = [s.split()[0] for s in industry_df[identifier].values]
+
+    s = pd.Series(industry_df["GICS_INDUSTRY_NAME"].values, 
+                  index=tickers,
+                  name="industry")
     sector_one_hot = pd.get_dummies(s, dtype="uint8", sparse=False)
     sector_one_hot.index.name = identifier
-    sector_one_hot.columns.name = "Sector"
-    out_fn = os.path.join(DEFAULT_PATH, "sector_one_hot.parquet")
+    sector_one_hot.columns.name = "industry"
+    out_fn = os.path.join(DEFAULT_PATH, "intermediate/industry_one_hot.parquet")
     sector_one_hot.to_parquet(out_fn)
-    print(f"Saved sector one hot to {out_fn}")
+    print(f"Saved industry one hot to {out_fn}")
 
 
 def _q_to_d(vals, qeds, all_dates):
@@ -174,6 +168,20 @@ def _q_to_d(vals, qeds, all_dates):
     df = TradingDays.with_dates(df, all_dates)
     df = df[~df.index.duplicated(keep='last')]
     return df.ffill()
+
+
+def build_market_cap(ticker, mkt_data, funda_data):
+    print(f"Building Market Cap for {ticker}")
+    close_df = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "close"]]
+    close_df = close_df.set_index(date_col)["close"]
+
+    nshares_df = _q_to_d(funda_data["Diluted Weighted Average Shares"].values,
+                         funda_data.index,
+                         close_df.index)
+
+    mcap_df = close_df * nshares_df
+    mcap_df.name = "market_cap"
+    return mcap_df
     
 
 def build_size(ticker, mkt_data, funda_data):
@@ -182,8 +190,8 @@ def build_size(ticker, mkt_data, funda_data):
     close_df = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "close"]]
     close_df = close_df.set_index(date_col)["close"]
 
-    nshares_df = _q_to_d(funda_data["IS_SH_FOR_DILUTED_EPS"].values,
-                         funda_data["quarter_end_date"].values,
+    nshares_df = _q_to_d(funda_data["Diluted Weighted Average Shares"].values,
+                         funda_data.index,
                          close_df.index)
 
     mcap_df = close_df * nshares_df
@@ -197,16 +205,33 @@ def build_size(ticker, mkt_data, funda_data):
 
 def build_value(ticker, mkt_data, funda_data):
     print(f"Building Value for {ticker}")
-    # Value (B/P): Book Equity/Price (lag BE by at least 3–6 months to avoid look-ahead).
+    # B/P
     close_df = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "close"]]
     close_df = close_df.set_index(date_col)["close"]
 
-    equities = funda_data["TOT_COMMON_EQY"] / funda_data["IS_SH_FOR_DILUTED_EPS"]
+    equities = funda_data["Total Common Equity"] / funda_data["Diluted Weighted Average Shares"]
     equity_df = _q_to_d(equities.values,
-                        funda_data["quarter_end_date"].values,
+                        funda_data.index,
                         close_df.index)
-    value_df = equity_df / close_df
-    value_df.name = "value_bp"
+    bp_df = equity_df / close_df
+    bp_df.name = "value_bp"
+
+    # Sales/P
+    sales = funda_data["Revenue"].rolling(4).sum() / funda_data["Diluted Weighted Average Shares"].rolling(4).mean()
+    sales_df = _q_to_d(sales.values,
+                       funda_data.index,
+                       close_df.index)
+    sp_df = sales_df / close_df
+    sp_df.name = "value_sp"
+
+    # CF/P
+    cf = funda_data["Cash From Operations"].rolling(4).sum() / funda_data["Diluted Weighted Average Shares"].rolling(4).mean()
+    cfp_df = _q_to_d(cf.values,
+                    funda_data.index,
+                    close_df.index) / close_df
+    cfp_df.name = "value_cfp"
+
+    value_df = pd.concat([bp_df, sp_df, cfp_df], axis=1)
     return value_df
     
 
@@ -216,9 +241,9 @@ def build_earnings_yield(ticker, mkt_data, funda_data):
     close_df = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "close"]]
     close_df = close_df.set_index(date_col)["close"]
 
-    nis = funda_data["IS_NET_INC_AVAIL_COM_SHRHLDRS"] / funda_data["IS_SH_FOR_DILUTED_EPS"]
+    nis = funda_data["Net Income Available To Common Shareholders - IS"] / funda_data["Diluted Weighted Average Shares"]
     ni_df = _q_to_d(nis.rolling(4).sum().values,
-                    funda_data["quarter_end_date"].values,
+                    funda_data.index,
                     close_df.index)
 
     ey_df = ni_df / close_df
@@ -233,39 +258,40 @@ def build_growth(ticker, mkt_data, funda_data):
     close_df = close_df.set_index(date_col)["close"]
 
     # 1. Payout ratio over five years
-    payout_ratio = funda_data["IS_REGULAR_CASH_DIVIDEND_PER_SH"] / funda_data["IS_EPS"]
+    payout_ratio = funda_data["Regular Cash Dividend Per Share"] / funda_data["Basic Earnings per Share"]
     payo_df = _q_to_d(payout_ratio.rolling(4*5).mean().values,
-                    funda_data["quarter_end_date"].values,
+                    funda_data.index,
                     close_df.index)
     payo_df.name = "growth_payo"
 
     # 2. Variability in capital structure
-    n_diff = np.abs(funda_data["IS_SH_FOR_DILUTED_EPS"].diff())
-    ld_diff = np.abs(funda_data["BS_LT_BORROW"].diff())
-    pe_diff = np.abs(funda_data["PREFERRED_EQUITY_&_MINORITY_INT"].diff()).fillna(0.)
-    n_diff_df = _q_to_d(n_diff.values, funda_data["quarter_end_date"].values, close_df.index)
+    n_diff = np.abs(funda_data["Diluted Weighted Average Shares"].diff())
+    ld_diff = np.abs(funda_data["Long Term Debt"].diff())
+    pe_diff = np.abs(funda_data["Preferred Equity and Minority Interest"].diff()).fillna(0.)
+    n_diff_df = _q_to_d(n_diff.values, funda_data.index, close_df.index)
     num = n_diff_df + _q_to_d(ld_diff.values+pe_diff.values,
-                    funda_data["quarter_end_date"].values,
+                    funda_data.index,
                     close_df.index)
-    den = funda_data["TOT_COMMON_EQY"] + funda_data["BS_LT_BORROW"] + funda_data["PREFERRED_EQUITY_&_MINORITY_INT"]
-    den = _q_to_d(den.values, funda_data["quarter_end_date"].values, close_df.index)
+    den = funda_data["Total Common Equity"] + funda_data["Long Term Debt"] + funda_data["Preferred Equity and Minority Interest"]
+    den = _q_to_d(den.values, funda_data.index, close_df.index)
     vcap_df = num.rolling(252*5).mean() / den
     vcap_df.name = "growth_vcap"
 
     # 3. Growth rate in total assets
-    agro = rolling_trend_over_mean_quarterly_np(funda_data["BS_TOT_ASSET"].values, 20)
-    agro_df = _q_to_d(agro, funda_data["quarter_end_date"].values, close_df.index)
+    sales = funda_data["Total Assets"] / funda_data["Diluted Weighted Average Shares"]
+    agro = rolling_trend_over_mean_quarterly_np(sales.values, 20)
+    agro_df = _q_to_d(agro, funda_data.index, close_df.index)
     agro_df.name = "growth_agro"
 
     # 4. Earnings growth rate over the last five years
-    egro = rolling_trend_over_mean_quarterly_np(funda_data["IS_EPS"].values, 20)
-    egro_df = _q_to_d(egro, funda_data["quarter_end_date"].values, close_df.index)
+    egro = rolling_trend_over_mean_quarterly_np(funda_data["Basic Earnings per Share"].values, 20)
+    egro_df = _q_to_d(egro, funda_data.index, close_df.index)
     egro_df.name = "growth_egro"
 
     # 5. Recent earnings change
-    eps =  funda_data["IS_EPS"].rolling(4).sum()
+    eps =  funda_data["Basic Earnings per Share"].rolling(4).sum()
     dele = (eps - eps.shift(4)) / (eps + eps.shift(4)) * 2
-    dele_df = _q_to_d(dele.values, funda_data["quarter_end_date"].values, close_df.index)
+    dele_df = _q_to_d(dele.values, funda_data.index, close_df.index)
     dele_df[dele_df < 0] = np.nan
     dele_df.name = "growth_dele"
 
@@ -283,32 +309,33 @@ def build_leverage(ticker, mkt_data, funda_data):
     close_df = close_df.set_index(date_col)["close"]
 
     # 1. Market leverage
-    me = _q_to_d(funda_data["IS_SH_FOR_DILUTED_EPS"].values,
-                 funda_data["quarter_end_date"].values,
+    me = _q_to_d(funda_data["Diluted Weighted Average Shares"].values,
+                 funda_data.index,
                  close_df.index) * close_df
-    num = funda_data["BS_LT_BORROW"].fillna(0.) + funda_data["PREFERRED_EQUITY_&_MINORITY_INT"].fillna(0.)
+    num = funda_data["Long Term Debt"] + funda_data["Preferred Equity and Minority Interest"].fillna(0.)
     num = _q_to_d(num.values,
-                  funda_data["quarter_end_date"].values,
+                  funda_data.index,
                   close_df.index) + me
     mlev_df = num / me
     mlev_df.name = "leverage_mlev"
 
     # 2. Book leverage
-    num = (funda_data["TOT_COMMON_EQY"].fillna(0.) + \
-           funda_data["BS_LT_BORROW"].fillna(0.) + \
-           funda_data["PREFERRED_EQUITY_&_MINORITY_INT"].fillna(0.))
-    den = funda_data["TOT_COMMON_EQY"].fillna(0.)
+    num = (funda_data["Total Common Equity"] + \
+           funda_data["Long Term Debt"] + \
+           funda_data["Preferred Equity and Minority Interest"].fillna(0.))
+    den = funda_data["Total Common Equity"]
     blev_df = _q_to_d((num/den).values,
-                    funda_data["quarter_end_date"].values,
+                    funda_data.index,
                     close_df.index
                     )
+    blev_df.name = "leverage_blev"
 
     # 3. Debt to total assets
-    debt = funda_data["BS_LT_BORROW"].fillna(0.) + funda_data["BS_ST_DEBT"].fillna(0.)
-    asset = funda_data["BS_TOT_ASSET"]
+    debt = funda_data["Long Term Debt"] + funda_data["Short Term Debt"].fillna(0.)
+    asset = funda_data["Total Assets"]
     dtoa = debt / asset
     dtoa_df = _q_to_d(dtoa.values,
-                funda_data["quarter_end_date"].values,
+                funda_data.index,
                 close_df.index)
     dtoa_df.name = "leverage_dtoa"
 
@@ -337,37 +364,44 @@ def build_volatility(ticker, mkt_data):
     std_df.name = "volatility_dsd"
 
     # High-low price
+    high = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "high"]].set_index(date_col)
+    high = high["high"].rolling(window=21).max()
+    low = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "low"]].set_index(date_col)
+    low = low["low"].rolling(window=21).min()
+    hilo_df = np.log(high/low)
+    hilo_df.name = "volatility_hilo"
+
     # Log of stock price
     # Cumulative range
     # Volume beta 
     # Serial dependence 
     # Option-implied standard deviation
-    volatility_df = std_df
+    volatility_df = pd.concat([std_df, hilo_df], axis=1)
     return volatility_df
 
 def build_trading_activity(ticker, mkt_data, funda_data):
     print(f"Building Trading Activity for {ticker}")
     volume = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "volume", "close"]].set_index(date_col)
     volume = volume["volume"] / volume["close"]
-    nshares = funda_data["IS_SH_FOR_DILUTED_EPS"]
+    nshares = funda_data["Diluted Weighted Average Shares"]
     # Share turnover rate
     # 1. annual
     annual = _q_to_d(nshares.rolling(4).mean().values,
-                    funda_data["quarter_end_date"].values,
+                    funda_data.index,
                     volume.index)
     annual = volume.rolling(252).sum() / annual
     annual.name = "trading_activity_annual"
 
     # 2. quarter
     quarter = _q_to_d(nshares.values,
-                    funda_data["quarter_end_date"].values,
+                    funda_data.index,
                     volume.index)
     quarter = volume.rolling(63).sum() / quarter
     quarter.name = "trading_activity_quarter"
 
     # 3. five years
     five_year = _q_to_d(nshares.rolling(4*5).mean().values,
-                    funda_data["quarter_end_date"].values,
+                    funda_data.index,
                     volume.index)
     five_year = volume.rolling(252*5).sum() / five_year
     five_year.name = "trading_activity_5y"
@@ -380,15 +414,49 @@ def build_earnings_variability(ticker, mkt_data, funda_data):
     print(f"Building Earnings Variability for {ticker}")
     all_dates = pd.to_datetime(sorted(mkt_data[date_col].unique()))
     # 1. Variability in earnings
-    earnings = funda_data["IS_NET_INC_AVAIL_COM_SHRHLDRS"]
+    earnings = funda_data["Net Income Available To Common Shareholders - IS"]
     earnings = earnings.rolling(4).sum()
     den = earnings.rolling(4*5).mean()
     num = earnings.rolling(4*5).std()
     vern_df = _q_to_d((num / den).values,
-                    funda_data["quarter_end_date"].values,
+                    funda_data.index,
                     all_dates)
     vern_df.name = "earnings_variability_vern"
     earnings_variability_df = vern_df
+
+    # 2. Variability in sales
+    sales = funda_data["Revenue"]
+    sales = sales.rolling(4).sum()
+    den = sales.rolling(4*5).mean()
+    num = sales.rolling(4*5).std()
+    vsales_df = _q_to_d((num / den).values,
+                    funda_data.index,
+                    all_dates)
+    vsales_df.name = "earnings_variability_vsales"
+
+    # 3. Variability in cash from operations
+    cfs = funda_data["Cash From Operations"]
+    cfs = cfs.rolling(4).sum()
+    den = cfs.rolling(4*5).mean()
+    num = cfs.rolling(4*5).std()
+    vcfs_df = _q_to_d((num / den).values,
+                    funda_data.index,
+                    all_dates)
+    vcfs_df.name = "earnings_variability_vcfs"
+
+    # 4. Accruals using cash-flow statement
+    ni = funda_data["Net Income Available To Common Shareholders - IS"].rolling(4).sum()
+    cfo = funda_data["Cash From Operations"].rolling(4).sum()
+    ta = funda_data["Total Assets"].rolling(4).mean()
+    cfaccruals_df = _q_to_d(((ni - cfo) /ta).values,
+                    funda_data.index,
+                    all_dates)
+    cfaccruals_df.name = "earnings_variability_cfaccruals"
+
+    earnings_variability_df = pd.concat([earnings_variability_df, 
+                                         vsales_df, 
+                                         vcfs_df, 
+                                         cfaccruals_df], axis=1)
     return earnings_variability_df
     
 
@@ -397,9 +465,9 @@ def build_dividend_yield(ticker, mkt_data, funda_data):
     close_df = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "close"]]
     close_df = close_df.set_index(date_col)["close"]
 
-    dividend = funda_data["IS_REGULAR_CASH_DIVIDEND_PER_SH"]
+    dividend = funda_data["Regular Cash Dividend Per Share"]
     pr_df = _q_to_d(dividend.rolling(4).sum().values,
-                    funda_data["quarter_end_date"].values,
+                    funda_data.index,
                     close_df.index)
 
     dividend_yield_df = pr_df / close_df
@@ -433,13 +501,57 @@ def build_beta(ticker, mkt_data, sp_df):
     return beta.rename("beta")
 
 
-def calc_descriptor(ticker, mkt_data, sp_df):
+def build_management_quality(ticker, mkt_data, funda_data):
+    print(f"Building Management Quality for {ticker}")
+    all_dates = pd.to_datetime(sorted(mkt_data[date_col].unique()))
+    # asset growth
+    asset = funda_data["Total Assets"].rolling(4).mean()
+    ag = asset / asset.shift(4) - 1.
+    ag_df = _q_to_d(ag.values,
+                    funda_data.index,
+                    all_dates)
+    ag_df.name = "management_quality_ag"
+
+    # issuance growth
+    shares = funda_data["Diluted Weighted Average Shares"].rolling(4).mean()
+    sg = shares / shares.shift(4) - 1.
+    sg_df = _q_to_d(sg.values,
+                    funda_data.index,
+                    all_dates)
+    sg_df.name = "management_quality_sg"
+
+    # capital expenditure growth
+    capex = funda_data["Capital Expenditures - Absolute Value"].rolling(4).sum()
+    cg = capex / capex.shift(4) - 1.
+    cg_df = _q_to_d(cg.values,
+                    funda_data.index,
+                    all_dates)
+    cg_df.name = "management_quality_cg"
+
+    # capital expenditure
+    ca = capex / asset
+    ca_df = _q_to_d(ca.values,
+                    funda_data.index,
+                    all_dates)
+    ca_df.name = "management_quality_ca"
+
+    management_quality_df = pd.concat([ag_df, sg_df, cg_df, ca_df], axis=1)
+    return management_quality_df
+
+
+def calc_descriptor_for_one_stock(ticker, mkt_data, sp_df):
     funda_fn = os.path.join(FUNDA_PATH, f"{ticker.lower()}.csv")
     if not os.path.exists(funda_fn):
         print(f"Failed to load fundamentals for {ticker}")
         return
 
-    funda_data = pd.read_csv(funda_fn).shift(1).ffill()
+    out_fn = os.path.join(DEFAULT_PATH, "intermediate/descriptor", f"{ticker}.parquet")
+
+    # # DEBUG
+    # if os.path.exists(out_fn):
+    #     return
+
+    funda_data = pd.read_csv(funda_fn).set_index("Dates").shift(1).ffill()
     dfs = []
     dfs.append(build_beta(ticker, mkt_data, sp_df))
     dfs.append(build_volatility(ticker, mkt_data))
@@ -452,39 +564,10 @@ def calc_descriptor(ticker, mkt_data, sp_df):
     dfs.append(build_earnings_variability(ticker, mkt_data, funda_data))
     dfs.append(build_leverage(ticker, mkt_data, funda_data))
     dfs.append(build_dividend_yield(ticker, mkt_data, funda_data))
+    dfs.append(build_management_quality(ticker, mkt_data, funda_data))
+    dfs.append(build_market_cap(ticker, mkt_data, funda_data))
 
     df = pd.concat(dfs, axis=1)
-    out_fn = os.path.join(DEFAULT_PATH, "descriptor", f"{ticker}.parquet")
     df.to_parquet(out_fn)
     print(f"Saved descriptors to {out_fn}")
     
-
-def main():
-    u = UniverseLoader(data_type=universe)
-    build_gics(u.universe_df)
-
-    loader = PriceLoader(region,
-                        start_date.strftime("%Y-%m-%d"),
-                        end_date.strftime("%Y-%m-%d"),
-                        universe,
-                        identifier
-                        )
-    mkt_data = loader.load("price")
-    
-    loader = PriceLoader(region,
-                        start_date.strftime("%Y-%m-%d"),
-                        end_date.strftime("%Y-%m-%d"),
-                        "hedger",
-                        identifier
-                        )
-    hedger = loader.load("hedger")
-    sp_df = hedger.loc[hedger["Ticker"] == "SPY"].set_index(date_col)
-
-    tickers = mkt_data["Ticker"].unique()
-    # tickers = ["CMDB"]
-    for ticker in tickers:
-        calc_descriptor(ticker, mkt_data, sp_df)
-
-
-if __name__ == "__main__":
-    sys.exit(main())

@@ -1,138 +1,114 @@
-
-
 import numpy as np
 import pandas as pd
 
-def _weighted_mean(x, w):
-    w = w.reindex(x.index).astype(float)
-    return (w * x).sum() / max(w.sum(), 1e-12)
-
-def _weighted_std(x, w):
-    m = _weighted_mean(x, w)
-    var = (w * (x - m) ** 2).sum() / max(w.sum(), 1e-12)
-    return np.sqrt(max(var, 1e-12))
-
-def _standardize_styles(Xs, w):
-    out = {}
-    for c in Xs.columns:
-        mu = _weighted_mean(Xs[c], w)
-        sd = _weighted_std(Xs[c], w)
-        out[c] = (Xs[c] - mu) / (sd if sd > 0 else 1.0)
-    return pd.DataFrame(out, index=Xs.index)
-
-def _wls_constrained(X, y, w, C):  # C' b = 0 (one or more linear constraints)
-    WX = X * w[:, None]
-    XtWX = X.T @ WX
-    XtWy = X.T @ (w * y)
+# ---------- helpers ----------
+def _wls_constrained(X, y, w, C):
+    X = np.asarray(X, float); y = np.asarray(y, float)
+    w = np.asarray(w, float); C = np.asarray(C, float)
+    WX = X * w[:, None]; XtWX = X.T @ WX; XtWy = X.T @ (w * y)
+    if C.size == 0:
+        return np.linalg.solve(XtWX + 1e-10*np.eye(XtWX.shape[0]), XtWy)
     zero = np.zeros((C.shape[1], C.shape[1]))
-    K = np.block([[XtWX, C], [C.T, zero]])
+    K = np.block([[XtWX, C],[C.T, zero]]) + 1e-10*np.eye(XtWX.shape[0]+C.shape[1])
     rhs = np.concatenate([XtWy, np.zeros(C.shape[1])])
-    K += 1e-10 * np.eye(K.shape[0])  # tiny ridge
-    sol = np.linalg.solve(K, rhs)
-    return sol[:X.shape[1]]
+    return np.linalg.solve(K, rhs)[:X.shape[1]]
 
-def _block_sum_to_zero_constraint(block_df, weights):
-    """Return a constraint vector c s.t. sum_i w_i * block_ij * beta_j = 0  (one constraint for the whole block)."""
-    w = weights.reindex(block_df.index).fillna(0.0).astype(float)
-    # Column sums under weights
-    col_wsum = (block_df.mul(w, axis=0)).sum(axis=0).values  # shape (K,)
-    return col_wsum  # 1 x K
+def _normalize_cap_weights(weights: pd.Series, index: pd.Index) -> pd.Series:
+    cw = weights.reindex(index).fillna(0.0).astype(float).clip(lower=0.0)
+    s = cw.sum()
+    return cw / s if s > 0 else cw
 
-def cross_sectional_risk_model_with_country(
-    r: pd.Series,
-    X_style: pd.DataFrame,
-    D_ind: pd.DataFrame,
-    C_cty: pd.DataFrame,  # NEW: country exposures (one-hot or revenue weights)
-    *,
-    hsigma: pd.Series | None = None,
-    style_winsor_p: float = 0.01,
-    return_winsor_p: float = 0.01,
-    ewma_lambda: float = 0.94,
-    prev_spec_var: pd.Series | None = None,
-    # Which weights to use for the sum-to-zero constraints (market-cap is typical)
-    constraint_weights: pd.Series | None = None,
-    # If constraint_weights is None, fall back to WLS weights for constraints
-    constrain_industries: bool = True,
-    constrain_countries: bool = True,
-):
-    """
-    Regress r on [standardized styles | countries | industries] with WLS and
-    sum-to-zero constraints on country and industry coefficients.
+def _block_cap_weight_constraint(block_df: pd.DataFrame, cap_w: pd.Series) -> np.ndarray:
+    B = block_df.reindex(cap_w.index).fillna(0.0).astype(float)
+    return (B.mul(cap_w, axis=0)).sum(axis=0).values
 
-    Inputs must share the same index of assets for this cross-section.
-    """
-    idx = r.index
-    Xs = X_style.reindex(idx)
-    Di = D_ind.reindex(idx)
-    Ct = C_cty.reindex(idx)
+def _lambda_from_half_life_days(half_life_days: float, *, step_days: float = 1.0) -> float:
+    """lambda = 0.5 ** (step_days / half_life_days)"""
+    if np.isinf(half_life_days): return 1.0
+    if half_life_days <= 0: raise ValueError("half_life_days must be > 0 or inf")
+    return float(0.5 ** (step_days / float(half_life_days)))
 
-    # Normalize country rows if they are fractional but not guaranteed to sum to 1
+def _apply_cap_in_reg_weights(base_w: pd.Series,
+                              mcap: pd.Series | None,
+                              *,
+                              exponent: float = 0.5,
+                              normalize: str = "mean1") -> pd.Series:
+    w = base_w.copy().astype(float)
+    if mcap is not None:
+        s = mcap.reindex(w.index).astype(float).clip(lower=0.0).fillna(0.0)
+        w = w * s.pow(exponent)
+    w = w.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    if normalize == "mean1":
+        m = w.mean()
+        if m > 0: w = w / m
+    return w
+
+
+def concat_loadings(X_style, D_ind, C_cty, idx):
+    Xs = X_style.loc[idx].fillna(0.0)
+    Di = D_ind.loc[idx].fillna(0.0)
+    Ct = C_cty.loc[idx].fillna(0.0)
+
+    # Normalize fractional country rows to sum to 1 when present
     row_sums = Ct.sum(axis=1)
     need_norm = (row_sums > 0) & (~np.isclose(row_sums, 1.0))
     if need_norm.any():
         Ct.loc[need_norm] = Ct.loc[need_norm].div(row_sums[need_norm], axis=0)
 
-    # Winsorize returns lightly
-    if return_winsor_p:
-        lo, hi = r.quantile([return_winsor_p, 1 - return_winsor_p])
-        r_w = r.clip(lo, hi)
-    else:
-        r_w = r
+    X = np.c_[Xs.values, Ct.values, Di.values]
+    col_names = list(Xs.columns) + list(Ct.columns) + list(Di.columns)
+    return X, col_names
 
-    # WLS weights from prior specific risk
+
+def cross_sectional_regression_one_day(
+    r: pd.Series,              # stock returns for the day (index: asset)
+    X_style: pd.DataFrame,     # style exposures (index: asset, columns: styles)
+    D_ind: pd.DataFrame,       # industry dummies (index: asset, columns: industries)
+    C_cty: pd.DataFrame,       # country weights/fractions (index: asset, columns: countries)
+    market_cap: pd.Series,     # market caps (index: asset)
+    *,
+    hsigma: pd.Series | None = None,     # optional prior specific stdevs (index: asset)
+    reg_cap_exponent: float = 0.5,
+    reg_weight_normalize: str = "mean1",
+    return_winsor_p: float = 0.01
+) -> tuple[pd.Series, pd.Series]:
+    """
+    Runs a WLS cross-sectional regression for ONE DAY:
+        r = X b + e, with cap-weighted sum-to-zero constraints on countries & industries.
+    Returns:
+        factor_returns: pd.Series (styles + countries + industries)
+        specific_return: pd.Series (per asset)
+    """
+    idx = r.index
+    
+    # Winsorize returns
+    r_w = r.clip(*r.quantile([return_winsor_p, 1 - return_winsor_p])) if return_winsor_p else r
+
+    # Base weights: inverse prior variance
     if hsigma is None:
-        w = pd.Series(1.0, index=idx)
+        base_w = pd.Series(1.0, index=idx, dtype=float)
     else:
-        w = 1.0 / (hsigma.reindex(idx).astype(float) ** 2)
-        w = w.replace([np.inf, 0], np.nan).fillna(1.0)
+        base_w = (1.0 / (hsigma.reindex(idx).astype(float) ** 2)).replace([np.inf, 0], np.nan).fillna(1.0)
 
-    # Standardize styles cross-sectionally
-    Xs_w = Xs.copy()
-    if style_winsor_p:
-        for c in Xs.columns:
-            lo, hi = Xs[c].quantile([style_winsor_p, 1 - style_winsor_p])
-            Xs_w[c] = Xs[c].clip(lo, hi)
-    Xs_z = _standardize_styles(Xs_w, w)
+    # √(cap) regression weighting
+    w = _apply_cap_in_reg_weights(base_w, market_cap, exponent=reg_cap_exponent, normalize=reg_weight_normalize)
 
-    # Design matrix: [styles | countries | industries]
-    X_blocks = [Xs_z.values, Ct.values, Di.values]
-    X = np.c_[*X_blocks]
-    col_names = list(Xs_z.columns) + list(Ct.columns) + list(Di.columns)
+    X, col_names = concat_loadings(Xs, Di, Ct, idx)
 
-    # Build constraints
-    cw = constraint_weights.reindex(idx) if constraint_weights is not None else w
+    # Cap-weighted sum-to-zero constraints for countries and industries
+    C_rows = []
+    cap_w = _normalize_cap_weights(market_cap, idx)
+    c = _block_cap_weight_constraint(Ct, cap_w)
+    if np.linalg.norm(c, 1) > 1e-12:
+        row = np.zeros(len(col_names)); s = Xs.shape[1]; row[s:s+Ct.shape[1]] = c; C_rows.append(row)
+    c = _block_cap_weight_constraint(Di, cap_w)
+    if np.linalg.norm(c, 1) > 1e-12:
+        row = np.zeros(len(col_names)); s = Xs.shape[1]+Ct.shape[1]; row[s:s+Di.shape[1]] = c; C_rows.append(row)
+    C = np.array(C_rows, float).T if C_rows else np.zeros((len(col_names), 0), float)
 
-    C_list = []
-    start = 0
-    # styles block -> no constraint
-    start += Xs_z.shape[1]
-
-    if constrain_countries:
-        c_cty = np.zeros(len(col_names))
-        c_cty[start : start + Ct.shape[1]] = _block_sum_to_zero_constraint(Ct, cw)
-        C_list.append(c_cty)
-    start += Ct.shape[1]
-
-    if constrain_industries:
-        c_ind = np.zeros(len(col_names))
-        c_ind[start : start + Di.shape[1]] = _block_sum_to_zero_constraint(Di, cw)
-        C_list.append(c_ind)
-
-    C = np.stack(C_list, axis=1) if C_list else np.zeros((len(col_names), 0))
-
-    # Solve constrained WLS
-    b = _wls_constrained(X, r_w.values, w.values, C) if C.shape[1] > 0 else _wls_constrained(X, r_w.values, w.values, np.zeros((X.shape[1], 0)))
-    factor_returns = pd.Series(b, index=col_names)
-
-    # Specific returns and variance update
+    # Solve and residuals
+    b = _wls_constrained(X, r_w.values, w.values, C)
+    factor_returns = pd.Series(b, index=col_names, name="factor_return")
     fitted = X @ b
     e = pd.Series(r_w.values - fitted, index=idx, name="specific_return")
-    e2 = e.pow(2).clip(lower=1e-12)
-
-    if prev_spec_var is None:
-        spec_var = e2
-    else:
-        pv = prev_spec_var.reindex(idx).fillna(e2)
-        spec_var = ewma_lambda * pv + (1.0 - ewma_lambda) * e2
-
-    return factor_returns, e.rename("specific_return"), spec_var.rename("specific_variance")
+    return factor_returns, e
