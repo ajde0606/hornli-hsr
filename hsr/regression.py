@@ -52,7 +52,7 @@ def concat_loadings(X_style, D_ind, C_cty, idx):
 
     X = np.c_[Xs.values, Ct.values, Di.values]
     col_names = list(Xs.columns) + list(Ct.columns) + list(Di.columns)
-    return X, col_names
+    return X, col_names, Xs, Ct, Di
 
 
 def cross_sectional_regression_one_day(
@@ -88,7 +88,7 @@ def cross_sectional_regression_one_day(
     # √(cap) regression weighting
     w = _apply_cap_in_reg_weights(base_w, market_cap, exponent=reg_cap_exponent, normalize=reg_weight_normalize)
 
-    X, col_names = concat_loadings(Xs, Di, Ct, idx)
+    X, col_names, Xs, Ct, Di = concat_loadings(X_style, D_ind, C_cty, idx)
 
     # Cap-weighted sum-to-zero constraints for countries and industries
     C_rows = []

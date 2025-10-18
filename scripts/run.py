@@ -1,8 +1,9 @@
-
 import os
 import sys
+import glob
 import numpy as np
 import pandas as pd
+from collections import defaultdict
 from hsr.config import *
 from hsr.loading import winsorize_and_standardize_descriptor, styles
 from hsr.regression import cross_sectional_regression_one_day, concat_loadings
@@ -154,7 +155,7 @@ def research():
 
 
         idx = spec_var_t.index
-        X_t, all_cols = concat_loadings(X_s, industry_df, country_df, idx)
+        X_t, all_cols, _, _, _ = concat_loadings(X_s, industry_df, country_df, idx)
         X_t = pd.DataFrame(X_t, index=idx, columns=all_cols)
 
         r2 = factor_variance_explained_per_asset(X_t, Sigma_f_t, spec_var_t)
@@ -168,8 +169,8 @@ def research():
 
 
 def main():
-    # construct_loadings()
-    # run_regression()
+    construct_loadings()
+    run_regression()
     compute_risk()
     research()
 
