@@ -2,6 +2,13 @@ import numpy as np
 import pandas as pd
 
 
+def _lambda_from_half_life_days(half_life_days: float, *, step_days: float = 1.0) -> float:
+    """lambda = 0.5 ** (step_days / half_life_days)"""
+    if np.isinf(half_life_days): return 1.0
+    if half_life_days <= 0: raise ValueError("half_life_days must be > 0 or inf")
+    return float(0.5 ** (step_days / float(half_life_days)))
+
+
 def factor_variance_explained_per_asset(
     X_t: pd.DataFrame,          # N x K exposures (rows assets, cols factors) for day t
     Sigma_f_t: pd.DataFrame,    # K x K factor cov for day t

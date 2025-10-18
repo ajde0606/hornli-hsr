@@ -22,11 +22,6 @@ def _block_cap_weight_constraint(block_df: pd.DataFrame, cap_w: pd.Series) -> np
     B = block_df.reindex(cap_w.index).fillna(0.0).astype(float)
     return (B.mul(cap_w, axis=0)).sum(axis=0).values
 
-def _lambda_from_half_life_days(half_life_days: float, *, step_days: float = 1.0) -> float:
-    """lambda = 0.5 ** (step_days / half_life_days)"""
-    if np.isinf(half_life_days): return 1.0
-    if half_life_days <= 0: raise ValueError("half_life_days must be > 0 or inf")
-    return float(0.5 ** (step_days / float(half_life_days)))
 
 def _apply_cap_in_reg_weights(base_w: pd.Series,
                               mcap: pd.Series | None,

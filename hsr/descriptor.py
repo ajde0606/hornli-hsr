@@ -3,6 +3,7 @@ import sys
 import numpy as np
 import pandas as pd
 from matterhorn.util.tradingdays import TradingDays
+from hsr.config import *
 
 
 def _path_join(root, subfolder):
@@ -10,62 +11,6 @@ def _path_join(root, subfolder):
     if not os.path.exists(res):
         os.makedirs(res)
     return res
-
-    
-def compute_barra_beta(
-    ticker_df: pd.DataFrame,
-    sp_df: pd.DataFrame,
-    price_col: str = "close",
-    rf_daily: pd.Series | float | None = None,  # daily risk-free (e.g., T-bill/252)
-    halflife: int = 63,                          # ~3 months of trading days
-    min_periods: int = 60,                       # warm-up
-    shrink_to: float | pd.Series | None = None,  # prior beta (e.g., industry beta)
-    shrink_intensity: float = 0.25               # 0=no shrink, 1=all prior
-) -> pd.Series:
-    """
-    Returns a daily Beta series aligned to the intersection of dates.
-    Assumes ticker_df and sp_df each have a DateTime index and a price_col.
-    """
-
-    # 1) Align and create daily simple returns
-    px = pd.DataFrame({
-        "stk": ticker_df[price_col].astype(float),
-        "mkt": sp_df[price_col].astype(float),
-    }).dropna()
-
-    r = px.pct_change().dropna()
-
-    # 2) Excess returns (optional)
-    if rf_daily is not None:
-        if np.isscalar(rf_daily):
-            r_ex_stk = r["stk"] - rf_daily
-            r_ex_mkt = r["mkt"] - rf_daily
-        else:
-            rf = pd.Series(rf_daily, index=r.index).astype(float)
-            r_ex_stk = r["stk"] - rf
-            r_ex_mkt = r["mkt"] - rf
-    else:
-        r_ex_stk = r["stk"]
-        r_ex_mkt = r["mkt"]
-
-    # 3) EWM covariance/variance (EWM-weighted market model slope)
-    #    Beta_t = Cov_t(stk, mkt) / Var_t(mkt)
-    ewm_cov = r_ex_stk.ewm(halflife=halflife, min_periods=min_periods, adjust=False).cov(r_ex_mkt)
-    ewm_var = r_ex_mkt.ewm(halflife=halflife, min_periods=min_periods, adjust=False).var()
-    beta_raw = (ewm_cov / ewm_var).dropna()
-
-    # 4) Shrinkage toward prior (industry beta or 1.0)
-    if shrink_to is not None:
-        if np.isscalar(shrink_to):
-            prior = float(shrink_to)
-            beta = (1 - shrink_intensity) * beta_raw + shrink_intensity * prior
-        else:
-            prior_series = pd.Series(shrink_to, index=beta_raw.index).reindex(beta_raw.index).fillna(method="ffill")
-            beta = (1 - shrink_intensity) * beta_raw + shrink_intensity * prior_series
-    else:
-        beta = beta_raw
-
-    return beta.rename("beta")
 
 
 def rolling_trend_over_mean_quarterly_np(y: np.ndarray, quarters: int = 20) -> np.ndarray:
@@ -139,6 +84,10 @@ def rolling_trend_over_mean_quarterly_np(y: np.ndarray, quarters: int = 20) -> n
             out[i_out] = np.nan if m == 0.0 else b / m
 
         return out
+
+
+def calc_return(adj_close, window):
+    return np.log(adj_close / adj_close.shift(window)) / window
 
 
 def build_gics(industry_df):
@@ -484,7 +433,7 @@ def build_beta(ticker, mkt_data, sp_df):
     # 1) Align and create daily simple returns
     px = pd.DataFrame({
         "stk": ticker_df[price_col].astype(float),
-        "mkt": sp_df[price_col].astype(float),
+        "mkt": sp_df.astype(float),
     }).dropna()
     r = px.pct_change().dropna()
 
@@ -551,7 +500,12 @@ def calc_descriptor_for_one_stock(ticker, mkt_data, sp_df):
     # if os.path.exists(out_fn):
     #     return
 
-    funda_data = pd.read_csv(funda_fn).set_index("Dates").shift(1).ffill()
+    funda_data = pd.read_csv(funda_fn).set_index("Dates")
+    last_day = pd.to_datetime(funda_data.index[-1]) + pd.Timedelta(days=91)
+    if last_day < pd.Timestamp.now():
+        funda_data.loc[last_day.strftime("%Y-%m-%d")] = np.nan
+    funda_data = funda_data.shift(1).ffill()
+
     dfs = []
     dfs.append(build_beta(ticker, mkt_data, sp_df))
     dfs.append(build_volatility(ticker, mkt_data))

@@ -4,12 +4,9 @@ import sys
 import numpy as np
 import pandas as pd
 from hsr.config import *
-from hsr.descriptor import calc_descriptor_for_one_stock
 from hsr.loading import winsorize_and_standardize_descriptor, styles
 from hsr.regression import cross_sectional_regression_one_day, concat_loadings
 from hsr.analysis import compute_risk_from_panels_rolling, factor_variance_explained_per_asset
-from matterhorn.data_loader.price_loader import PriceLoader
-import matterhorn.util.mputil as mputil
 
 
 def _empty(S):
@@ -20,7 +17,7 @@ def _empty(S):
 
 
 def run_regression():
-    simple_ret_df = pd.read_parquet(os.path.join(DEFAULT_PATH, "input/simple_return.parquet"))
+    simple_ret_df = pd.read_parquet(os.path.join(DEFAULT_PATH, "intermediate/simple_return.parquet"))
     industry_df = pd.read_parquet(os.path.join(DEFAULT_PATH, "intermediate/industry_one_hot.parquet"))
     loading_df = pd.read_parquet(os.path.join(DEFAULT_PATH, "intermediate/loadings.parquet")).reset_index()
     mkt_cap = pd.read_parquet(os.path.join(DEFAULT_PATH, "intermediate/cap_weights.parquet"))
@@ -68,10 +65,11 @@ def run_regression():
 def compute_risk():
     factor_return_df = pd.read_parquet(os.path.join(DEFAULT_PATH, "output/factor_return.parquet"))
     specific_return_df = pd.read_parquet(os.path.join(DEFAULT_PATH, "output/specific_return.parquet"))
-    regime_proxy = pd.read_csv(os.path.join(DEFAULT_PATH, "input/sp.csv"))
-    regime_proxy = pd.Series(regime_proxy["adj_close"].values,
-                             index=pd.to_datetime(regime_proxy[date_col].values))
-    regime_proxy = regime_proxy / regime_proxy.shift(1) - 1.
+    regime_proxy = pd.read_csv(os.path.join(DEFAULT_PATH, "intermediate/sp.csv"),
+                               header=None)
+    regime_proxy = pd.Series(regime_proxy[1].values,
+                             index=pd.to_datetime(regime_proxy[0].values),
+                             name="regime")
 
     factor_cov, regime_multiplier, specific_var = compute_risk_from_panels_rolling(
         factor_return_df,
@@ -87,36 +85,6 @@ def compute_risk():
     out_fn = os.path.join(DEFAULT_PATH, "output/specific_var.parquet")
     specific_var.T.to_parquet(out_fn)
     print(f"Specific var saved to {out_fn}")
-
-
-def calc_descriptor():
-    industry_df = pd.read_csv(os.path.join(DEFAULT_PATH, "input/industry.csv"))
-    build_gics(industry_df)
-
-    loader = PriceLoader(region,
-                        start_date.strftime("%Y-%m-%d"),
-                        end_date.strftime("%Y-%m-%d"),
-                        universe,
-                        identifier
-                        )
-    mkt_data = loader.load("price")
-    
-    loader = PriceLoader(region,
-                        start_date.strftime("%Y-%m-%d"),
-                        end_date.strftime("%Y-%m-%d"),
-                        "hedger",
-                        identifier
-                        )
-    hedger = loader.load("hedger")
-    sp_df = hedger.loc[hedger["Ticker"] == "SPY"].set_index(date_col)
-    sp_df.to_csv(os.path.join(DEFAULT_PATH, "input/sp.csv"))
-
-    args = []
-    tickers = mkt_data["Ticker"].unique()
-    # tickers = ["CMDB"]
-    for ticker in tickers:
-        args.append((calc_descriptor_for_one_stock, [ticker, mkt_data, sp_df]))
-    res = mputil.map(args, single_process=False)
 
 
 def construct_loadings():
@@ -200,21 +168,13 @@ def research():
 
 
 def main():
-    calc_descriptor()
-
-    construct_loadings()
-    
-    run_regression()
-
+    # construct_loadings()
+    # run_regression()
     compute_risk()
-
     research()
 
-    
-    
+    return 0
 
+    
 if __name__ == "__main__":
     sys.exit(main())
-        
-
-
