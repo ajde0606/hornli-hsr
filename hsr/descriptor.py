@@ -2,7 +2,6 @@ import os
 import sys
 import numpy as np
 import pandas as pd
-from matterhorn.util.tradingdays import TradingDays
 from hsr.config import *
 
 
@@ -107,14 +106,40 @@ def build_gics(industry_df):
     print(f"Saved industry one hot to {out_fn}")
 
 
+def _shift_to_first_available_date_static(dts, all_dates):
+    res = dts.copy()
+    for i, dt in enumerate(dts):
+        if dt in all_dates: continue
+        idx = np.where(all_dates>=dt)[0][0]
+        res[i] = all_dates[idx]
+    return res
+    
+
+def _with_dates(df, dates, how='right'):
+    """df resampled at dates."""
+
+    is_series = isinstance(df, pd.Series)
+    if is_series:
+        df = pd.DataFrame(df)
+
+    res_df = pd.DataFrame(dates.values, columns=['date'])
+    res_df = res_df.set_index('date')
+    res_df = df.join(res_df, how=how)
+
+    if is_series:
+        res_df = res_df.iloc[:, 0]
+
+    return res_df
+
+
 def _q_to_d(vals, qeds, all_dates):
     df = pd.Series(vals, index=qeds).dropna()
     df.index = pd.to_datetime(df.index)
     df = df[df.index >= start_date]
-    df.index = TradingDays.shift_to_first_available_date_static(
+    df.index = _shift_to_first_available_date_static(
         df.index.values, all_dates
     )
-    df = TradingDays.with_dates(df, all_dates)
+    df = _with_dates(df, all_dates)
     df = df[~df.index.duplicated(keep='last')]
     return df.ffill()
 

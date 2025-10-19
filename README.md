@@ -1,10 +1,10 @@
 # hornli-hsr
 
-Open risk/alpha infrastructure for quants.
+Open risk model infrastructure for quants.
 
 ## Overview
 
-hornli-hsr provides composable building blocks for quantitative researchers to design, backtest, and deploy systematic strategies. It offers utilities for data ingestion, portfolio construction, risk analysis, and result visualization so that teams can iterate quickly while retaining reproducibility.
+hornli-hsr provides a free open-source risk model for quantitative researchers. Along with a fully documented methodology, we're releasing the full dataset for free, including descriptors, loadings, factor returns, factor covariance, specific risk and specific return.
 
 ## Getting Started
 
@@ -25,34 +25,19 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-### Quickstart
-
-Run the demo workflow to verify the installation:
-
-```bash
-make demo
-```
-
-This will download sample market data, execute a toy strategy, and generate a simple performance report in the `reports/` directory.
-
 ## Project Structure
 
-- `hsr/`: Core library code including data pipelines, analytics modules, and strategy interfaces.
+- `hsr/`: Core library code including descriptors calculation, loadings calculation, cross-sectional regression framework, covariance estimation and analytics modules
 - `scripts/`: Command-line utilities and helper scripts for maintenance and batch tasks.
-- `Makefile`: Common automation targets for linting, testing, and running demos.
 - `setup.py`: Editable installation entry point.
 
-## Development
 
-We welcome contributions! To run the codebase locally:
+## Quick Start
 
 ```bash
-pip install -r requirements-dev.txt
-make lint test
+export HSR_PATH=your_local_data_path
+
 ```
 
-Before submitting changes, ensure that the full test suite passes and that any new features are documented in this README or the project documentation.
-
 ## License
-
 hornli-hsr is released under the MIT License. See `LICENSE` for details.
