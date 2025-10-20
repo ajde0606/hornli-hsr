@@ -12,4 +12,5 @@ setup(name="hsr",
       ext_modules=ext_modules,
       install_requires=[
           "numpy",
+          "pandas",
       ])
