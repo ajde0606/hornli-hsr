@@ -1,4 +1,6 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()                      # reads .env in CWD
 import pandas as pd
 
 DEFAULT_PATH=os.environ['HSR_PATH']

@@ -266,7 +266,7 @@ def build_growth(ticker, mkt_data, funda_data):
     eps =  funda_data["Basic Earnings per Share"].rolling(4).sum()
     dele = (eps - eps.shift(4)) / (eps + eps.shift(4)) * 2
     dele_df = _q_to_d(dele.values, funda_data.index, close_df.index)
-    dele_df[dele_df < 0] = np.nan
+    dele_df[dele_df < 0] = 0.
     dele_df.name = "growth_dele"
 
     growth_df = pd.concat([payo_df, 
@@ -500,6 +500,7 @@ def build_management_quality(ticker, mkt_data, funda_data):
     cg_df = _q_to_d(cg.values,
                     funda_data.index,
                     all_dates)
+    cg_df[cg_df == np.inf] = 0
     cg_df.name = "management_quality_cg"
 
     # capital expenditure

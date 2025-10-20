@@ -208,7 +208,7 @@ def compute_risk_from_panels_rolling(
     elif cov_format == "long":
         stacked = pd.DataFrame(Sigma_rows).sort_index()
         Sigma_by_day = (
-            stacked.stack(["row_factor","col_factor"])
+            stacked.stack(level=["row_factor","col_factor"], future_stack=True)
                    .rename("value")
                    .reset_index()
                    .rename(columns={"level_0":"date"})

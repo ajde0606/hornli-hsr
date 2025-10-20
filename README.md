@@ -28,16 +28,16 @@ pip install -e .
 ## Project Structure
 
 - `hsr/`: Core library code including descriptors calculation, loadings calculation, cross-sectional regression framework, covariance estimation and analytics modules
-- `scripts/`: Command-line utilities and helper scripts for maintenance and batch tasks.
 - `setup.py`: Editable installation entry point.
+- `example.ipynb`: Explains how to download data and run all risk model calculation
 
 
 ## Quick Start
 
 ```bash
-export HSR_PATH=your_local_data_path
-
+echo "HSR_PATH=(Enter your data path)" >> .env
 ```
+Then, try example.ipynb
 
 ## License
 hornli-hsr is released under the MIT License. See `LICENSE` for details.
