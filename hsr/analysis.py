@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 
 
+
+
 def _lambda_from_half_life_days(half_life_days: float, *, step_days: float = 1.0) -> float:
     """lambda = 0.5 ** (step_days / half_life_days)"""
     if np.isinf(half_life_days): return 1.0
@@ -53,7 +55,19 @@ def factor_variance_explained_portfolio(
 
     tot = var_factor + var_specific
     r2_port = (var_factor / tot) if tot > 0 else 0.0
-    return r2_port, var_factor, var_specific
+    return r2_port, var_factor, var_specific, tot
+
+
+def calc_realized_vol(
+    w_t: pd.Series,
+    realized_returns: pd.DataFrame, 
+    window_size: int = 252):
+
+    w = w_t.astype(float).values
+    realized_returns_window = realized_returns.iloc[-window_size:].astype(float).values
+    r_p = realized_returns_window @ w
+    realized = np.var(r_p, ddof=1)
+    return realized
 
 
 def compute_risk_from_panels_rolling(
@@ -219,3 +233,6 @@ def compute_risk_from_panels_rolling(
     spec_var_by_day = spec_var_by_day.astype(float)
 
     return Sigma_by_day, regime_mult_by_day.astype(float), spec_var_by_day
+
+
+

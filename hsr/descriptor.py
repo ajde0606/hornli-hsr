@@ -146,8 +146,7 @@ def _q_to_d(vals, qeds, all_dates):
 
 def build_market_cap(ticker, mkt_data, funda_data):
     print(f"Building Market Cap for {ticker}")
-    close_df = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "close"]]
-    close_df = close_df.set_index(date_col)["close"]
+    close_df = mkt_data["close"]
 
     nshares_df = _q_to_d(funda_data["Diluted Weighted Average Shares"].values,
                          funda_data.index,
@@ -161,14 +160,7 @@ def build_market_cap(ticker, mkt_data, funda_data):
 def build_size(ticker, mkt_data, funda_data):
     print(f"Building Size and non-linear size for {ticker}")
     # Size: ln(Market Cap)
-    close_df = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "close"]]
-    close_df = close_df.set_index(date_col)["close"]
-
-    nshares_df = _q_to_d(funda_data["Diluted Weighted Average Shares"].values,
-                         funda_data.index,
-                         close_df.index)
-
-    mcap_df = close_df * nshares_df
+    mcap_df = build_market_cap(ticker, mkt_data, funda_data)
     size_df = np.log(mcap_df)
     size_df.name = "size"
 
@@ -180,8 +172,7 @@ def build_size(ticker, mkt_data, funda_data):
 def build_value(ticker, mkt_data, funda_data):
     print(f"Building Value for {ticker}")
     # B/P
-    close_df = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "close"]]
-    close_df = close_df.set_index(date_col)["close"]
+    close_df = mkt_data["close"]
 
     equities = funda_data["Total Common Equity"] / funda_data["Diluted Weighted Average Shares"]
     equity_df = _q_to_d(equities.values,
@@ -212,8 +203,7 @@ def build_value(ticker, mkt_data, funda_data):
 def build_earnings_yield(ticker, mkt_data, funda_data):
     print(f"Building Earnings Yield for {ticker}")
     # Earnings Yield: Trailing 12mNI/Price.
-    close_df = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "close"]]
-    close_df = close_df.set_index(date_col)["close"]
+    close_df = mkt_data["close"]
 
     nis = funda_data["Net Income Available To Common Shareholders - IS"] / funda_data["Diluted Weighted Average Shares"]
     ni_df = _q_to_d(nis.rolling(4).sum().values,
@@ -228,8 +218,7 @@ def build_earnings_yield(ticker, mkt_data, funda_data):
 def build_growth(ticker, mkt_data, funda_data):
     print(f"Building Growth for {ticker}")
     # growth
-    close_df = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "close"]]
-    close_df = close_df.set_index(date_col)["close"]
+    close_df = mkt_data["close"]
 
     # 1. Payout ratio over five years
     payout_ratio = funda_data["Regular Cash Dividend Per Share"] / funda_data["Basic Earnings per Share"]
@@ -279,8 +268,7 @@ def build_growth(ticker, mkt_data, funda_data):
 
 def build_leverage(ticker, mkt_data, funda_data):
     print(f"Building Leverage for {ticker}")
-    close_df = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "close"]]
-    close_df = close_df.set_index(date_col)["close"]
+    close_df = mkt_data["close"]
 
     # 1. Market leverage
     me = _q_to_d(funda_data["Diluted Weighted Average Shares"].values,
@@ -321,8 +309,7 @@ def build_momentum(ticker, mkt_data):
     # 1. Relative strength
     print(f"Building Momentum for {ticker}")
     # Momentum (12–1): cumulative return over past 12 months excluding last month.
-    adj_close = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "adj_close"]].set_index(date_col)
-    simple_ret = adj_close["adj_close"] / adj_close["adj_close"].shift(1) - 1.
+    simple_ret = mkt_data["adj_close"] / mkt_data["adj_close"].shift(1) - 1.
     mom_df = simple_ret.rolling(window=252).mean().shift(21)
     mom_df.name = "momentum_rs"
     return mom_df
@@ -332,16 +319,13 @@ def build_volatility(ticker, mkt_data):
     print(f"Building Volatility for {ticker}")
     # Beta times sigma
     # Daily standard deviation 
-    adj_close = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "adj_close"]].set_index(date_col)
-    simple_ret = adj_close["adj_close"] / adj_close["adj_close"].shift(1) - 1.
+    simple_ret = mkt_data["adj_close"] / mkt_data["adj_close"].shift(1) - 1.
     std_df = simple_ret.rolling(window=60).std()
     std_df.name = "volatility_dsd"
 
     # High-low price
-    high = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "high"]].set_index(date_col)
-    high = high["high"].rolling(window=21).max()
-    low = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "low"]].set_index(date_col)
-    low = low["low"].rolling(window=21).min()
+    high = mkt_data["high"].rolling(window=21).max()
+    low = mkt_data["low"].rolling(window=21).min()
     hilo_df = np.log(high/low)
     hilo_df.name = "volatility_hilo"
 
@@ -355,8 +339,7 @@ def build_volatility(ticker, mkt_data):
 
 def build_trading_activity(ticker, mkt_data, funda_data):
     print(f"Building Trading Activity for {ticker}")
-    volume = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "volume", "close"]].set_index(date_col)
-    volume = volume["volume"] / volume["close"]
+    volume = mkt_data["volume"] / mkt_data["close"]
     nshares = funda_data["Diluted Weighted Average Shares"]
     # Share turnover rate
     # 1. annual
@@ -386,7 +369,7 @@ def build_trading_activity(ticker, mkt_data, funda_data):
 
 def build_earnings_variability(ticker, mkt_data, funda_data):
     print(f"Building Earnings Variability for {ticker}")
-    all_dates = pd.to_datetime(sorted(mkt_data[date_col].unique()))
+    all_dates = pd.to_datetime(sorted(mkt_data.index))
     # 1. Variability in earnings
     earnings = funda_data["Net Income Available To Common Shareholders - IS"]
     earnings = earnings.rolling(4).sum()
@@ -436,8 +419,7 @@ def build_earnings_variability(ticker, mkt_data, funda_data):
 
 def build_dividend_yield(ticker, mkt_data, funda_data):
     print(f"Building Dividend Yield for {ticker}")
-    close_df = mkt_data.loc[mkt_data[identifier] == ticker, [date_col, "close"]]
-    close_df = close_df.set_index(date_col)["close"]
+    close_df = mkt_data["close"]
 
     dividend = funda_data["Regular Cash Dividend Per Share"]
     pr_df = _q_to_d(dividend.rolling(4).sum().values,
@@ -453,11 +435,10 @@ def build_beta(ticker, mkt_data, sp_df):
     halflife = 63                          # ~3 months of trading days
     min_periods = 60                       # warm-up
     price_col = "adj_close"
-    ticker_df = mkt_data.loc[mkt_data[identifier] == ticker].set_index(date_col)
 
     # 1) Align and create daily simple returns
     px = pd.DataFrame({
-        "stk": ticker_df[price_col].astype(float),
+        "stk": mkt_data[price_col].astype(float),
         "mkt": sp_df.astype(float),
     }).dropna()
     r = px.pct_change().dropna()
@@ -477,7 +458,7 @@ def build_beta(ticker, mkt_data, sp_df):
 
 def build_management_quality(ticker, mkt_data, funda_data):
     print(f"Building Management Quality for {ticker}")
-    all_dates = pd.to_datetime(sorted(mkt_data[date_col].unique()))
+    all_dates = pd.to_datetime(sorted(mkt_data.index))
     # asset growth
     asset = funda_data["Total Assets"].rolling(4).mean()
     ag = asset / asset.shift(4) - 1.
@@ -526,28 +507,42 @@ def calc_descriptor_for_one_stock(ticker, mkt_data, sp_df):
     # if os.path.exists(out_fn):
     #     return
 
-    funda_data = pd.read_csv(funda_fn).set_index("Dates")
-    last_day = pd.to_datetime(funda_data.index[-1]) + pd.Timedelta(days=91)
-    if last_day < pd.Timestamp.now():
-        funda_data.loc[last_day.strftime("%Y-%m-%d")] = np.nan
-    funda_data = funda_data.shift(1).ffill()
+    funda_data = pd.read_csv(funda_fn).dropna(subset=["Dates"])
+    if len(funda_data) == 0:
+        print(f"Failed to load fundamentals for {ticker}")
+        return
+
+    funda_data = funda_data.set_index("Dates")
+    mkt_df = mkt_data.loc[mkt_data[identifier] == ticker].dropna().set_index(date_col)
+
+    first_date = pd.to_datetime(mkt_df.index[0])
+    funda_df = funda_data[funda_data.index >= first_date.strftime("%Y-%m-%d")]
+    if len(funda_df) == 0:
+        print(f"Failed to load fundamentals for {ticker}")
+        return
+
+    last_day = pd.to_datetime(funda_df.index[-1]) + pd.Timedelta(days=91)
+    if (last_day < pd.Timestamp.now()) and (last_day < pd.to_datetime(mkt_df.index[-1])):
+        funda_df.loc[last_day.strftime("%Y-%m-%d")] = np.nan
+
+    funda_df = funda_df.shift(1).ffill()
+    mkt_df = mkt_df.shift(1)
 
     dfs = []
-    dfs.append(build_beta(ticker, mkt_data, sp_df))
-    dfs.append(build_volatility(ticker, mkt_data))
-    dfs.append(build_momentum(ticker, mkt_data))
-    dfs.append(build_size(ticker, mkt_data, funda_data))
-    dfs.append(build_trading_activity(ticker, mkt_data, funda_data))
-    dfs.append(build_growth(ticker, mkt_data, funda_data))
-    dfs.append(build_earnings_yield(ticker, mkt_data, funda_data))
-    dfs.append(build_value(ticker, mkt_data, funda_data))
-    dfs.append(build_earnings_variability(ticker, mkt_data, funda_data))
-    dfs.append(build_leverage(ticker, mkt_data, funda_data))
-    dfs.append(build_dividend_yield(ticker, mkt_data, funda_data))
-    dfs.append(build_management_quality(ticker, mkt_data, funda_data))
-    dfs.append(build_market_cap(ticker, mkt_data, funda_data))
+    dfs.append(build_beta(ticker, mkt_df, sp_df))
+    dfs.append(build_volatility(ticker, mkt_df))
+    dfs.append(build_momentum(ticker, mkt_df))
+    dfs.append(build_size(ticker, mkt_df, funda_df))
+    dfs.append(build_trading_activity(ticker, mkt_df, funda_df))
+    dfs.append(build_growth(ticker, mkt_df, funda_df))
+    dfs.append(build_earnings_yield(ticker, mkt_df, funda_df))
+    dfs.append(build_value(ticker, mkt_df, funda_df))
+    dfs.append(build_earnings_variability(ticker, mkt_df, funda_df))
+    dfs.append(build_leverage(ticker, mkt_df, funda_df))
+    dfs.append(build_dividend_yield(ticker, mkt_df, funda_df))
+    dfs.append(build_management_quality(ticker, mkt_df, funda_df))
+    dfs.append(build_market_cap(ticker, mkt_df, funda_df))
 
     df = pd.concat(dfs, axis=1)
     df.to_parquet(out_fn)
     print(f"Saved descriptors to {out_fn}")
-    

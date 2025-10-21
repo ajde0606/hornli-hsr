@@ -55,6 +55,66 @@ def concat_loadings(X_style, D_ind, C_cty, idx):
     return X, col_names, Xs, Ct, Di
 
 
+def _norm_w(w):
+    w = np.asarray(w, float)
+    w = np.where(np.isfinite(w) & (w > 0), w, 0.0)
+    s = w.sum()
+    return w / s if s > 0 else np.zeros_like(w)
+
+def _wmean(x, w):
+    w = _norm_w(w); x = np.asarray(x, float)
+    return float((w * x).sum())
+
+def _wvar(x, w):
+    w = _norm_w(w); x = np.asarray(x, float)
+    mu = _wmean(x, w)
+    return float((w * (x - mu) ** 2).sum())
+
+def _wnorm2(x, w):
+    w = _norm_w(w); x = np.asarray(x, float)
+    return float((w * x * x).sum())
+
+def vef_and_r2(y, y_hat, w):
+    """
+    y: realized returns (N,)
+    y_hat: fitted (X b) from your no-intercept WLS (N,)
+    w: regression weights used in the fit (N,)
+
+    Returns:
+      - VEF_SS: projection-compatible variance explained (no centering) in [0,1]
+      - R2_w: centered weighted R^2 via FWL demeaning (also in [0,1] under consistency)
+      - extras for debugging
+    """
+    y = np.asarray(y, float); y_hat = np.asarray(y_hat, float); w = _norm_w(w)
+
+    # --- 1) VEF via W-norms (no centering) ---
+    ss_y  = _wnorm2(y, w)
+    ss_f  = _wnorm2(y_hat, w)
+    ss_e  = _wnorm2(y - y_hat, w)
+    VEF_SS = ss_f / (ss_y + 1e-12)
+
+    # --- 2) Weighted R^2 via FWL-style centering (diagnostics only) ---
+    y0      = y      - _wmean(y, w)
+    yhat0   = y_hat  - _wmean(y_hat, w)
+    var_y   = _wvar(y0, w)
+    var_e   = _wvar(y0 - yhat0, w)
+    R2_w    = 1.0 - var_e / (var_y + 1e-12)
+    VEF_ctr = _wvar(yhat0, w) / (var_y + 1e-12)  # should ≈ R2_w
+
+    # Cross-term check (should be ~0 after centering)
+    cross_share = 2.0 * ( (w * yhat0 * (y0 - yhat0)).sum() ) / (var_y + 1e-12)
+
+    return {
+        "VEF_SS": VEF_SS,          # preferred for no-intercept spec
+        "R2_w": R2_w,              # centered R^2 (should track VEF_SS closely)
+        "VEF_centered": VEF_ctr,   # equals R2_w up to fp error
+        "SS_total": ss_y,
+        "SS_factor": ss_f,
+        "SS_specific": ss_e,
+        "cross_share_centered": cross_share
+    }
+
+
 def cross_sectional_regression_one_day(
     r: pd.Series,              # stock returns for the day (index: asset)
     X_style: pd.DataFrame,     # style exposures (index: asset, columns: styles)
@@ -106,4 +166,7 @@ def cross_sectional_regression_one_day(
     factor_returns = pd.Series(b, index=col_names, name="factor_return")
     fitted = X @ b
     e = pd.Series(r_w.values - fitted, index=idx, name="specific_return")
-    return factor_returns, e
+
+    metrics = vef_and_r2(r_w.values, fitted, w.values)
+
+    return factor_returns, e, metrics
