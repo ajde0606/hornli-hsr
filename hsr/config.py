@@ -4,6 +4,7 @@ load_dotenv()                      # reads .env in CWD
 import pandas as pd
 
 DEFAULT_PATH=os.environ['HSR_PATH']
+
 if not os.path.exists(DEFAULT_PATH):
     os.makedirs(DEFAULT_PATH)
 
