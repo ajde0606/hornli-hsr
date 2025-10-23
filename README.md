@@ -6,6 +6,7 @@ Open risk model infrastructure for quants.
 
 hornli-hsr provides a free open-source risk model for quantitative researchers. Along with a fully documented methodology, we're releasing the full dataset for free, including descriptors, loadings, factor returns, factor covariance, specific risk and specific return.
 The methodology can be found at https://hornliquant.com/api/risk-model/whitepaper
+
 Please see https://hornliquant.com/risk-model for more details
 
 ## Getting Started
