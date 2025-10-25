@@ -17,6 +17,9 @@ if not os.path.exists(DEFAULT_PATH+"/intermediate"):
 if not os.path.exists(DEFAULT_PATH+"/output"):
     os.makedirs(DEFAULT_PATH+"/output")
 
+if not os.path.exists(DEFAULT_PATH+"/sample"):
+    os.makedirs(DEFAULT_PATH+"/sample")
+
 FUNDA_PATH = os.path.join(DEFAULT_PATH, "input/fundamentals")
 if not os.path.exists(FUNDA_PATH):
     os.makedirs(FUNDA_PATH)

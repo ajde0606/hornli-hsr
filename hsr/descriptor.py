@@ -232,7 +232,7 @@ def build_growth(ticker, mkt_data, funda_data):
     ld_diff = np.abs(funda_data["Long Term Debt"].diff())
     pe_diff = np.abs(funda_data["Preferred Equity and Minority Interest"].diff()).fillna(0.)
     n_diff_df = _q_to_d(n_diff.values, funda_data.index, close_df.index)
-    num = n_diff_df + _q_to_d(ld_diff.values+pe_diff.values,
+    num = n_diff_df*close_df + _q_to_d(ld_diff.values+pe_diff.values,
                     funda_data.index,
                     close_df.index)
     den = funda_data["Total Common Equity"] + funda_data["Long Term Debt"] + funda_data["Preferred Equity and Minority Interest"]
